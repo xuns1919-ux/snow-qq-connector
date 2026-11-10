@@ -21,4 +21,10 @@ owner-only remote memory recall. It only writes remote memory for explicit
 owner requests; ordinary QQ users never receive or write that memory. Leave
 these settings empty to keep Ombre entirely disabled.
 
+## Group whitelist
+
+Group replies are off by default. To enable them, set `GROUP_CHAT_MODE=whitelist` and place the permitted QQ group IDs in `GROUP_WHITELIST` as a comma-separated list. The bridge ignores every other group.
+
+Allowed groups require an explicit `@` mention by default (`GROUP_REPLY_REQUIRE_AT=true`). Set it to `false` only if the bot should answer all messages in those allowed groups. Group conversations use a separate per-group, per-user local history and never inherit owner privileges or private-chat history.
+
 Never commit `.env`, `identity.md`, or `memory.sqlite3`.

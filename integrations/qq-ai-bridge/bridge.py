@@ -7,10 +7,13 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(mess
 DATA=Path(os.getenv('DATA_DIR','/data')); DATA.mkdir(parents=True,exist_ok=True)
 DB=os.getenv('SQLITE_PATH','/data/memory.sqlite3'); OWNER=os.getenv('OWNER_QQ',''); SELF_ID=os.getenv('SELF_ID',''); LIMIT=int(os.getenv('RECENT_MESSAGE_LIMIT','40')); MAX_FILE=int(os.getenv('MAX_FILE_SIZE_MB','20'))*1024*1024
 PRIVATE_CHAT_MODE=os.getenv('PRIVATE_CHAT_MODE','friends').strip().lower(); ALLOWED_USERS={x.strip() for x in os.getenv('ALLOWED_USERS','').split(',') if x.strip()}; FRIEND_REQUEST_MODE=os.getenv('FRIEND_REQUEST_MODE','manual').strip().lower()
+GROUP_CHAT_MODE=os.getenv('GROUP_CHAT_MODE','disabled').strip().lower(); ALLOWED_GROUPS={x.strip() for x in os.getenv('GROUP_WHITELIST',os.getenv('ALLOWED_GROUPS','')).split(',') if x.strip()}; GROUP_REPLY_REQUIRE_AT=os.getenv('GROUP_REPLY_REQUIRE_AT','true').strip().lower() not in ('0','false','no','off')
 if PRIVATE_CHAT_MODE not in ('owner_only','whitelist','friends'):
  logging.warning('invalid PRIVATE_CHAT_MODE; falling back to owner_only'); PRIVATE_CHAT_MODE='owner_only'
 if FRIEND_REQUEST_MODE not in ('manual','whitelist','auto'):
  logging.warning('invalid FRIEND_REQUEST_MODE; falling back to manual'); FRIEND_REQUEST_MODE='manual'
+if GROUP_CHAT_MODE not in ('disabled','whitelist'):
+ logging.warning('invalid GROUP_CHAT_MODE; falling back to disabled'); GROUP_CHAT_MODE='disabled'
 
 def is_owner(user_id):return str(user_id)==OWNER
 def private_chat_decision(event):
@@ -25,6 +28,23 @@ def friend_request_decision(user_id):
  if FRIEND_REQUEST_MODE=='auto':return 'approve'
  if FRIEND_REQUEST_MODE=='whitelist' and (is_owner(user_id) or user_id in ALLOWED_USERS):return 'approve'
  return 'pending'
+def group_chat_decision(event):
+ group_id=str(event.get('group_id',''))
+ if GROUP_CHAT_MODE=='disabled':return False,'disabled'
+ if group_id in ALLOWED_GROUPS:return True,'whitelist'
+ return False,'not_whitelisted'
+def is_bot_mentioned(event):
+ """Return whether a OneBot group message explicitly @-mentions this bot."""
+ bot=str(event.get('self_id') or SELF_ID)
+ if not bot:return False
+ message=event.get('message') or []
+ if isinstance(message,list):
+  for segment in message:
+   if not isinstance(segment,dict) or segment.get('type')!='at':continue
+   data=segment.get('data') or {}
+   if str(data.get('qq') or data.get('user_id') or '')==bot:return True
+ raw=str(event.get('raw_message') or '')
+ return bool(re.search(r'\[CQ:at,[^\]]*qq='+re.escape(bot)+r'(?:,|\])',raw))
 def normal_identity():
  return os.getenv('NORMAL_SYSTEM_PROMPT','你是 Snow，一个友善、自然的 QQ 聊天助手。当前用户是普通好友。只能使用当前用户自己的对话与记忆；不得泄露或声称读取 OWNER 的身份、记忆、历史、文件、账号信息或服务器信息；不得执行发空间、点赞、改备注、服务器管理、设备控制等主人专属操作。')
 
@@ -187,6 +207,29 @@ async def send_action(ws,action,params):
   result=await asyncio.to_thread(post_action,action,params)
   logging.info('onebot HTTP action=%s status=%s retcode=%s wording=%s',action,result.get('status'),result.get('retcode'),result.get('wording'))
  except Exception: logging.exception('send action failed')
+async def handle_group_message(ws,event):
+ group_id=str(event.get('group_id','')); user_id=str(event.get('user_id',''))
+ allowed,reason=group_chat_decision(event)
+ if not allowed:
+  logging.info('GROUP_CHAT_DENIED group_id=%s user_id=%s reason=%s',group_id,user_id,reason); return
+ if GROUP_REPLY_REQUIRE_AT and not is_bot_mentioned(event):
+  logging.info('GROUP_CHAT_IGNORED group_id=%s user_id=%s reason=not_mentioned',group_id,user_id); return
+ if seen(event.get('message_id') or event.get('time')):return
+ content,display,temps=await segments(event.get('message') or [])
+ if not content:return
+ # Group history is isolated from private chats and never receives owner privileges.
+ session_id=f'group:{group_id}:user:{user_id}'
+ logging.info('GROUP_CHAT_ALLOWED group_id=%s user_id=%s mode=%s',group_id,user_id,GROUP_CHAT_MODE)
+ try:
+  save(session_id,'user',display); memory_hint(session_id,display); out=await answer(session_id,content,False)
+  out=out.replace('\\n','\n')
+  out=re.sub(r'^\s*\[[^\]\n]*(?:消息时间|\d{4}-\d{2}-\d{2}|Asia/Shanghai)[^\]\n]*\]\s*', '', out).strip()
+  save(session_id,'assistant',out)
+  await send_action(ws,'send_group_msg',{'group_id':int(group_id),'message':out})
+ finally:
+  for p in temps:
+   try:p.unlink(missing_ok=True)
+   except Exception:pass
 async def poke_friend(ws):
  """Native private poke is disabled until SnowLuma/QQ accepts OIDB 0xed3_1."""
  logging.warning('native poke unavailable: refusing window-shake/message-segment fallback')
@@ -283,7 +326,10 @@ async def run():
        await send_action(ws,'set_friend_add_request',{'flag':str(flag),'approve':True})
        logging.info('friend request approved uid=%s remark_set=False',uid)
       continue
-     if e.get('post_type')!='message' or e.get('message_type')!='private':continue
+     if e.get('post_type')!='message':continue
+     if e.get('message_type')=='group':
+      await handle_group_message(ws,e); continue
+     if e.get('message_type')!='private':continue
      uid=str(e.get('user_id','')); logging.info('PRIVATE_MESSAGE_RECEIVED user_id=%s',uid)
      allowed,reason=private_chat_decision(e)
      if not allowed:
