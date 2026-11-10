@@ -1,0 +1,5 @@
+websockets>=13
+openai>=1.0
+python-dotenv>=1.0
+# Match Ombre-Brain's deployed official MCP SDK line.
+mcp==1.29.0

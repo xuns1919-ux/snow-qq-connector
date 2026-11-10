@@ -1,0 +1,33 @@
+# Secrets and environment-specific configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Runtime state, conversation data, and logs
+data/
+*.db
+*.sqlite
+*.sqlite3
+*.log
+logs/
+identity.md
+runtime.env
+
+# Python and Node build artifacts
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+node_modules/
+dist/
+build/
+
+# Editor and operating system files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
